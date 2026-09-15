@@ -111,32 +111,45 @@ def send_webhook(payload_dict):
             raise RuntimeError(f"HTTP {e.code}: {body}") from None
 
 
+class UnpostableArticle(Exception):
+    """Every fallback failed for reasons unrelated to rate limiting - give up
+    on this one instead of retrying it forever."""
+
+
 def post_to_discord(keyword, article):
     if not WEBHOOK_URL:
         raise RuntimeError("DISCORD_WEBHOOK_URL is not set")
 
-    try:
-        send_webhook(
-            {
-                "content": "@everyone",
-                "embeds": [build_embed(keyword, article)],
-                "allowed_mentions": {"parse": ["everyone"]},
-            }
-        )
-    except RuntimeError as e:
-        if "HTTP 429" in str(e):
-            raise
-        # The rich embed got rejected for some field-validation reason we
-        # didn't anticipate (unusual title/characters, etc). Fall back to a
-        # plain message so the article still reaches the channel instead of
-        # being retried forever and never posted.
-        print(f"[warn] embed rejected ({e}); falling back to plain text")
-        send_webhook(
-            {
-                "content": f"@everyone\n**{display_name(keyword)}**\n{article['title']}\n{article['link']}",
-                "allowed_mentions": {"parse": ["everyone"]},
-            }
-        )
+    mention = {"parse": ["everyone"]}
+    attempts = [
+        {
+            "content": "@everyone",
+            "embeds": [build_embed(keyword, article)],
+            "allowed_mentions": mention,
+        },
+        {
+            "content": f"@everyone\n**{display_name(keyword)}**\n{article['title']}\n{article['link']}",
+            "allowed_mentions": mention,
+        },
+        # Last resort: some Google News links for heavily-clustered stories
+        # are themselves over a thousand characters, which can blow past
+        # Discord's 2000-char content limit even with the title dropped.
+        {"content": f"@everyone {article['link']}", "allowed_mentions": mention},
+    ]
+
+    last_error = None
+    for i, payload in enumerate(attempts):
+        try:
+            send_webhook(payload)
+            if i > 0:
+                print(f"[warn] posted via fallback #{i} after earlier rejection: {last_error}")
+            return
+        except RuntimeError as e:
+            if "HTTP 429" in str(e):
+                raise
+            last_error = e
+
+    raise UnpostableArticle(str(last_error))
 
 
 def load_seen():
@@ -195,9 +208,18 @@ def main():
     candidates.sort(key=article_sort_key)
 
     posted = 0
+    skipped = 0
     for keyword, article in candidates:
         try:
             post_to_discord(keyword, article)
+        except UnpostableArticle as e:
+            # Every fallback failed for a reason that will never resolve on
+            # its own (e.g. a pathologically long link) - mark it seen so it
+            # doesn't get retried and fail again every run forever.
+            print(f"[skip] giving up on {article['title']!r}: {e}")
+            seen[article["link"]] = datetime.now(timezone.utc).isoformat()
+            skipped += 1
+            continue
         except (urllib.error.URLError, RuntimeError) as e:
             print(f"[error] discord post failed for {article['title']!r}: {e}")
             continue
@@ -208,7 +230,7 @@ def main():
         time.sleep(1)  # stay well under Discord's rate limit
 
     save_seen(seen)
-    print(f"Done. {posted} new article(s) posted.")
+    print(f"Done. {posted} new article(s) posted, {skipped} permanently skipped.")
 
 
 if __name__ == "__main__":
