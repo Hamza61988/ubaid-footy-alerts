@@ -58,24 +58,26 @@ next scheduled run.
 
 1. Edit `keywords.json`. Each entry is a full Google News search query.
    Follow the existing pattern for a new name:
-   `"<Exact Name>" pakistan football -cricket`
+   `"<Exact Name>" pakistan football`
    - `\"quotes\"` around the name match the phrase, not the words
      separately.
    - `pakistan football` (unquoted) requires both words to appear
      somewhere in the match — cuts down false hits a lot for common
      names (plain "Ali Khan" alone pulls in Bollywood's Khan family,
      foreign footballers of the same name, etc.).
-   - `-cricket` excludes cricket coverage. Several names on this list
-     (e.g. Hassan Ali, Ali Agha) are shared with well-known Pakistani
-     *cricketers* — Google can still match an article that's really
-     about cricket if "football" happens to appear anywhere else on
-     the page, so this term is needed even after adding "football"
-     above.
+   - Only add `-cricket` if the specific name genuinely collides with a
+     well-known Pakistani *cricketer* (currently done for `"Hassan
+     Ali"` and `"Ali Agha"`, which are also top Pakistan cricket
+     players). Don't add it by default — Pakistani sports sites often
+     bundle football and cricket coverage on the same page/roundup, so
+     excluding "cricket" everywhere quietly drops real football
+     matches too, not just false positives.
    - None of this is a perfect filter — Google's matching isn't a
      strict "these exact words in this exact spot" search, so an
      occasional false positive can still slip through for very common
-     names. If one keeps recurring, add more exclusion terms
-     (`-cricket -something_else`) the same way.
+     names, and a genuine over-broad exclusion can drop a real match.
+     If a specific name keeps causing trouble either way, adjust its
+     query the same way.
 2. Commit and push.
 3. Done — the next scheduled run (within 10 minutes) picks up the new
    list automatically. No code changes needed.
