@@ -2,12 +2,14 @@
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 KEYWORDS_FILE = "keywords.json"
 SEEN_FILE = "seen.json"
@@ -15,7 +17,14 @@ RSS_BASE = "https://news.google.com/rss/search"
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 MAX_SEEN = 3000
 REQUEST_TIMEOUT = 20
+EMBED_COLOR = 0x1DB954
 USER_AGENT = "Mozilla/5.0 (compatible; ubaid-footy-alerts/1.0)"
+
+OG_IMAGE_RE = re.compile(
+    r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']'
+    r'|<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:image["\']',
+    re.IGNORECASE,
+)
 
 
 def fetch_articles(query):
@@ -30,23 +39,57 @@ def fetch_articles(query):
     for item in root.findall(".//item"):
         title = (item.findtext("title") or "").strip()
         link = (item.findtext("link") or "").strip()
+        pub_date = (item.findtext("pubDate") or "").strip()
         source_el = item.find("source")
         source = (source_el.text or "").strip() if source_el is not None else ""
         if title and link:
-            articles.append({"title": title, "link": link, "source": source})
+            articles.append(
+                {"title": title, "link": link, "source": source, "pub_date": pub_date}
+            )
     return articles
+
+
+def find_preview_image(article_url):
+    """Best-effort scrape of the article's og:image. Any failure just means no thumbnail."""
+    try:
+        req = urllib.request.Request(article_url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html = resp.read(300_000).decode("utf-8", errors="replace")
+        match = OG_IMAGE_RE.search(html)
+        if match:
+            return match.group(1) or match.group(2)
+    except Exception:
+        pass
+    return None
+
+
+def build_embed(keyword, article):
+    embed = {
+        "title": article["title"][:256],
+        "url": article["link"],
+        "color": EMBED_COLOR,
+        "author": {"name": keyword.strip('"')},
+    }
+    if article["source"]:
+        embed["footer"] = {"text": article["source"]}
+    if article["pub_date"]:
+        try:
+            embed["timestamp"] = parsedate_to_datetime(article["pub_date"]).isoformat()
+        except (TypeError, ValueError):
+            pass
+
+    image_url = find_preview_image(article["link"])
+    if image_url:
+        embed["image"] = {"url": image_url}
+
+    return embed
 
 
 def post_to_discord(keyword, article):
     if not WEBHOOK_URL:
         raise RuntimeError("DISCORD_WEBHOOK_URL is not set")
 
-    lines = [f"**New match for _{keyword.strip(chr(34))}_**", article["title"]]
-    if article["source"]:
-        lines[-1] += f" — *{article['source']}*"
-    lines.append(article["link"])
-
-    payload = json.dumps({"content": "\n".join(lines)}).encode("utf-8")
+    payload = json.dumps({"embeds": [build_embed(keyword, article)]}).encode("utf-8")
     req = urllib.request.Request(
         WEBHOOK_URL,
         data=payload,
