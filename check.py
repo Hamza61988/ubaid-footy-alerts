@@ -61,6 +61,9 @@ def build_embed(keyword, article):
     return embed
 
 
+MAX_RATE_LIMIT_RETRIES = 5
+
+
 def post_to_discord(keyword, article):
     if not WEBHOOK_URL:
         raise RuntimeError("DISCORD_WEBHOOK_URL is not set")
@@ -78,12 +81,22 @@ def post_to_discord(keyword, article):
         headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            resp.read()
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {e.code}: {body}") from None
+
+    for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                resp.read()
+            return
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            if e.code == 429 and attempt < MAX_RATE_LIMIT_RETRIES:
+                try:
+                    retry_after = json.loads(body).get("retry_after", 1)
+                except json.JSONDecodeError:
+                    retry_after = 1
+                time.sleep(float(retry_after) + 0.25)
+                continue
+            raise RuntimeError(f"HTTP {e.code}: {body}") from None
 
 
 def load_seen():
