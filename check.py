@@ -15,12 +15,13 @@ RSS_BASE = "https://news.google.com/rss/search"
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 MAX_SEEN = 3000
 REQUEST_TIMEOUT = 20
+USER_AGENT = "Mozilla/5.0 (compatible; ubaid-footy-alerts/1.0)"
 
 
 def fetch_articles(query):
     params = {"q": query, "hl": "en-PK", "gl": "PK", "ceid": "PK:en"}
     url = f"{RSS_BASE}?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
         data = resp.read()
 
@@ -49,7 +50,7 @@ def post_to_discord(keyword, article):
     req = urllib.request.Request(
         WEBHOOK_URL,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
         method="POST",
     )
     try:
