@@ -65,7 +65,13 @@ def post_to_discord(keyword, article):
     if not WEBHOOK_URL:
         raise RuntimeError("DISCORD_WEBHOOK_URL is not set")
 
-    payload = json.dumps({"embeds": [build_embed(keyword, article)]}).encode("utf-8")
+    payload = json.dumps(
+        {
+            "content": "@everyone",
+            "embeds": [build_embed(keyword, article)],
+            "allowed_mentions": {"parse": ["everyone"]},
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
         WEBHOOK_URL,
         data=payload,
