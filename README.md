@@ -57,11 +57,25 @@ next scheduled run.
 ## Adding or removing keywords
 
 1. Edit `keywords.json`. Each entry is a full Google News search query.
-   - Wrap exact names in `\"quotes\"` so it matches the phrase, not the
-     words separately.
-   - Keep (or add) a trailing `football` on generic/common names — it
-     cuts down false matches a lot (e.g. plain "Ali Khan" or "Hassan
-     Ali" are common Pakistani names with lots of unrelated news).
+   Follow the existing pattern for a new name:
+   `"<Exact Name>" pakistan football -cricket`
+   - `\"quotes\"` around the name match the phrase, not the words
+     separately.
+   - `pakistan football` (unquoted) requires both words to appear
+     somewhere in the match — cuts down false hits a lot for common
+     names (plain "Ali Khan" alone pulls in Bollywood's Khan family,
+     foreign footballers of the same name, etc.).
+   - `-cricket` excludes cricket coverage. Several names on this list
+     (e.g. Hassan Ali, Ali Agha) are shared with well-known Pakistani
+     *cricketers* — Google can still match an article that's really
+     about cricket if "football" happens to appear anywhere else on
+     the page, so this term is needed even after adding "football"
+     above.
+   - None of this is a perfect filter — Google's matching isn't a
+     strict "these exact words in this exact spot" search, so an
+     occasional false positive can still slip through for very common
+     names. If one keeps recurring, add more exclusion terms
+     (`-cricket -something_else`) the same way.
 2. Commit and push.
 3. Done — the next scheduled run (within 10 minutes) picks up the new
    list automatically. No code changes needed.
