@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 NAME_RE = re.compile(r'^"([^"]+)"')
+CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 KEYWORDS_FILE = "keywords.json"
 SEEN_FILE = "seen.json"
@@ -21,6 +22,18 @@ MAX_SEEN = 3000
 REQUEST_TIMEOUT = 20
 EMBED_COLOR = 0x1DB954
 USER_AGENT = "Mozilla/5.0 (compatible; ubaid-footy-alerts/1.0)"
+# Some publishers (AP of Pakistan, government press releases) ship
+# headlines that list out several officials by name and run very long.
+# Cap well under Discord's limits so nothing ever gets rejected for length.
+TITLE_LIMIT = 300
+
+
+def clean_text(text, limit):
+    text = CONTROL_CHARS_RE.sub("", text)
+    text = " ".join(text.split())
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text
 
 
 def fetch_articles(query):
@@ -33,7 +46,7 @@ def fetch_articles(query):
     root = ET.fromstring(data)
     articles = []
     for item in root.findall(".//item"):
-        title = (item.findtext("title") or "").strip()
+        title = clean_text((item.findtext("title") or "").strip(), TITLE_LIMIT)
         link = (item.findtext("link") or "").strip()
         pub_date = (item.findtext("pubDate") or "").strip()
         source_el = item.find("source")
