@@ -1,0 +1,114 @@
+"""Poll Google News RSS for keywords and post new hits to a Discord webhook."""
+
+import json
+import os
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+
+KEYWORDS_FILE = "keywords.json"
+SEEN_FILE = "seen.json"
+RSS_BASE = "https://news.google.com/rss/search"
+WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
+MAX_SEEN = 3000
+REQUEST_TIMEOUT = 20
+
+
+def fetch_articles(query):
+    params = {"q": query, "hl": "en-PK", "gl": "PK", "ceid": "PK:en"}
+    url = f"{RSS_BASE}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+        data = resp.read()
+
+    root = ET.fromstring(data)
+    articles = []
+    for item in root.findall(".//item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        source_el = item.find("source")
+        source = (source_el.text or "").strip() if source_el is not None else ""
+        if title and link:
+            articles.append({"title": title, "link": link, "source": source})
+    return articles
+
+
+def post_to_discord(keyword, article):
+    if not WEBHOOK_URL:
+        raise RuntimeError("DISCORD_WEBHOOK_URL is not set")
+
+    lines = [f"**New match for _{keyword.strip(chr(34))}_**", article["title"]]
+    if article["source"]:
+        lines[-1] += f" — *{article['source']}*"
+    lines.append(article["link"])
+
+    payload = json.dumps({"content": "\n".join(lines)}).encode("utf-8")
+    req = urllib.request.Request(
+        WEBHOOK_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+        resp.read()
+
+
+def load_seen():
+    if not os.path.exists(SEEN_FILE):
+        return {}
+    with open(SEEN_FILE, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    # Back-compat: older format was a plain list of links.
+    if isinstance(raw, list):
+        now = datetime.now(timezone.utc).isoformat()
+        return {link: now for link in raw}
+    return raw
+
+
+def save_seen(seen):
+    if len(seen) > MAX_SEEN:
+        oldest_first = sorted(seen.items(), key=lambda kv: kv[1])
+        seen = dict(oldest_first[-MAX_SEEN:])
+    with open(SEEN_FILE, "w", encoding="utf-8") as f:
+        json.dump(seen, f, indent=2, sort_keys=True)
+
+
+def main():
+    with open(KEYWORDS_FILE, "r", encoding="utf-8") as f:
+        keywords = json.load(f)
+
+    seen = load_seen()
+    posted = 0
+
+    for keyword in keywords:
+        try:
+            articles = fetch_articles(keyword)
+        except (urllib.error.URLError, ET.ParseError) as e:
+            print(f"[warn] fetch failed for {keyword!r}: {e}")
+            continue
+
+        for article in articles:
+            link = article["link"]
+            if link in seen:
+                continue
+
+            try:
+                post_to_discord(keyword, article)
+            except (urllib.error.URLError, RuntimeError) as e:
+                print(f"[error] discord post failed for {article['title']!r}: {e}")
+                continue
+
+            seen[link] = datetime.now(timezone.utc).isoformat()
+            posted += 1
+            print(f"[posted] {keyword}: {article['title']}")
+            time.sleep(1)  # stay well under Discord's rate limit
+
+    save_seen(seen)
+    print(f"Done. {posted} new article(s) posted.")
+
+
+if __name__ == "__main__":
+    main()
