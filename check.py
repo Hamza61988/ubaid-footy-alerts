@@ -2,7 +2,6 @@
 
 import json
 import os
-import re
 import time
 import urllib.error
 import urllib.parse
@@ -19,12 +18,6 @@ MAX_SEEN = 3000
 REQUEST_TIMEOUT = 20
 EMBED_COLOR = 0x1DB954
 USER_AGENT = "Mozilla/5.0 (compatible; ubaid-footy-alerts/1.0)"
-
-OG_IMAGE_RE = re.compile(
-    r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']'
-    r'|<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:image["\']',
-    re.IGNORECASE,
-)
 
 
 def fetch_articles(query):
@@ -49,21 +42,9 @@ def fetch_articles(query):
     return articles
 
 
-def find_preview_image(article_url):
-    """Best-effort scrape of the article's og:image. Any failure just means no thumbnail."""
-    try:
-        req = urllib.request.Request(article_url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            html = resp.read(300_000).decode("utf-8", errors="replace")
-        match = OG_IMAGE_RE.search(html)
-        if match:
-            return match.group(1) or match.group(2)
-    except Exception:
-        pass
-    return None
-
-
 def build_embed(keyword, article):
+    # No thumbnail: Google News RSS links go to a JS-redirect interstitial
+    # page, not the publisher's page, so there's no real og:image to read.
     embed = {
         "title": article["title"][:256],
         "url": article["link"],
@@ -77,11 +58,6 @@ def build_embed(keyword, article):
             embed["timestamp"] = parsedate_to_datetime(article["pub_date"]).isoformat()
         except (TypeError, ValueError):
             pass
-
-    image_url = find_preview_image(article["link"])
-    if image_url:
-        embed["image"] = {"url": image_url}
-
     return embed
 
 
@@ -124,13 +100,25 @@ def save_seen(seen):
         json.dump(seen, f, indent=2, sort_keys=True)
 
 
+def article_sort_key(candidate):
+    _, article = candidate
+    try:
+        return parsedate_to_datetime(article["pub_date"])
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
 def main():
     with open(KEYWORDS_FILE, "r", encoding="utf-8") as f:
         keywords = json.load(f)
 
     seen = load_seen()
-    posted = 0
 
+    # Gather every new match across all keywords first (deduping links seen
+    # more than once in this batch too) so we can post oldest-to-newest
+    # instead of one keyword's whole result set at a time.
+    candidates = []
+    links_in_batch = set()
     for keyword in keywords:
         try:
             articles = fetch_articles(keyword)
@@ -140,19 +128,25 @@ def main():
 
         for article in articles:
             link = article["link"]
-            if link in seen:
+            if link in seen or link in links_in_batch:
                 continue
+            links_in_batch.add(link)
+            candidates.append((keyword, article))
 
-            try:
-                post_to_discord(keyword, article)
-            except (urllib.error.URLError, RuntimeError) as e:
-                print(f"[error] discord post failed for {article['title']!r}: {e}")
-                continue
+    candidates.sort(key=article_sort_key)
 
-            seen[link] = datetime.now(timezone.utc).isoformat()
-            posted += 1
-            print(f"[posted] {keyword}: {article['title']}")
-            time.sleep(1)  # stay well under Discord's rate limit
+    posted = 0
+    for keyword, article in candidates:
+        try:
+            post_to_discord(keyword, article)
+        except (urllib.error.URLError, RuntimeError) as e:
+            print(f"[error] discord post failed for {article['title']!r}: {e}")
+            continue
+
+        seen[article["link"]] = datetime.now(timezone.utc).isoformat()
+        posted += 1
+        print(f"[posted] {keyword}: {article['title']}")
+        time.sleep(1)  # stay well under Discord's rate limit
 
     save_seen(seen)
     print(f"Done. {posted} new article(s) posted.")
