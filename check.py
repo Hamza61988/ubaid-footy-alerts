@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -9,6 +10,8 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+
+NAME_RE = re.compile(r'^"([^"]+)"')
 
 KEYWORDS_FILE = "keywords.json"
 SEEN_FILE = "seen.json"
@@ -42,6 +45,11 @@ def fetch_articles(query):
     return articles
 
 
+def display_name(keyword):
+    match = NAME_RE.match(keyword)
+    return match.group(1) if match else keyword
+
+
 def build_embed(keyword, article):
     # No thumbnail: Google News RSS links go to a JS-redirect interstitial
     # page, not the publisher's page, so there's no real og:image to read.
@@ -49,10 +57,10 @@ def build_embed(keyword, article):
         "title": article["title"][:256],
         "url": article["link"],
         "color": EMBED_COLOR,
-        "author": {"name": keyword.strip('"')},
+        "author": {"name": display_name(keyword)[:256]},
     }
     if article["source"]:
-        embed["footer"] = {"text": article["source"]}
+        embed["footer"] = {"text": article["source"][:2048]}
     if article["pub_date"]:
         try:
             embed["timestamp"] = parsedate_to_datetime(article["pub_date"]).isoformat()
@@ -64,17 +72,8 @@ def build_embed(keyword, article):
 MAX_RATE_LIMIT_RETRIES = 5
 
 
-def post_to_discord(keyword, article):
-    if not WEBHOOK_URL:
-        raise RuntimeError("DISCORD_WEBHOOK_URL is not set")
-
-    payload = json.dumps(
-        {
-            "content": "@everyone",
-            "embeds": [build_embed(keyword, article)],
-            "allowed_mentions": {"parse": ["everyone"]},
-        }
-    ).encode("utf-8")
+def send_webhook(payload_dict):
+    payload = json.dumps(payload_dict).encode("utf-8")
     req = urllib.request.Request(
         WEBHOOK_URL,
         data=payload,
@@ -97,6 +96,34 @@ def post_to_discord(keyword, article):
                 time.sleep(float(retry_after) + 0.25)
                 continue
             raise RuntimeError(f"HTTP {e.code}: {body}") from None
+
+
+def post_to_discord(keyword, article):
+    if not WEBHOOK_URL:
+        raise RuntimeError("DISCORD_WEBHOOK_URL is not set")
+
+    try:
+        send_webhook(
+            {
+                "content": "@everyone",
+                "embeds": [build_embed(keyword, article)],
+                "allowed_mentions": {"parse": ["everyone"]},
+            }
+        )
+    except RuntimeError as e:
+        if "HTTP 429" in str(e):
+            raise
+        # The rich embed got rejected for some field-validation reason we
+        # didn't anticipate (unusual title/characters, etc). Fall back to a
+        # plain message so the article still reaches the channel instead of
+        # being retried forever and never posted.
+        print(f"[warn] embed rejected ({e}); falling back to plain text")
+        send_webhook(
+            {
+                "content": f"@everyone\n**{display_name(keyword)}**\n{article['title']}\n{article['link']}",
+                "allowed_mentions": {"parse": ["everyone"]},
+            }
+        )
 
 
 def load_seen():
