@@ -104,6 +104,14 @@ To remove a keyword, delete its line from the JSON array.
 
 ## Notes
 
+- Only articles published within the last 3 days get posted
+  (`MAX_ARTICLE_AGE` in `check.py`). Google News RSS search returns
+  whatever it considers most *relevant* to a query, not strictly the
+  most recent — a years-old article can rotate back into a query's
+  results and would otherwise look "new" since we've never seen its
+  link before. Anything older is logged as `[stale]` and marked seen
+  without posting. Adjust the constant if you want a wider/narrower
+  window.
 - Schedule is every 10 minutes (`.github/workflows/check.yml`), the
   fastest practical interval on GitHub Actions' free public-repo tier.
 - `seen.json` is capped at the 3000 most recently seen links so it

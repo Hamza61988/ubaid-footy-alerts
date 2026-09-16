@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
 NAME_RE = re.compile(r'^"([^"]+)"')
@@ -26,6 +26,11 @@ USER_AGENT = "Mozilla/5.0 (compatible; ubaid-footy-alerts/1.0)"
 # headlines that list out several officials by name and run very long.
 # Cap well under Discord's limits so nothing ever gets rejected for length.
 TITLE_LIMIT = 300
+# Google News RSS search returns whatever it considers most *relevant* to
+# the query, not strictly the most recent - a years-old article can rotate
+# back into a query's results and look "new" since we've never seen its
+# link before. Anything older than this is ignored rather than posted.
+MAX_ARTICLE_AGE = timedelta(days=3)
 
 
 def clean_text(text, limit):
@@ -34,6 +39,13 @@ def clean_text(text, limit):
     if len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
     return text
+
+
+def parse_pub_date(article):
+    try:
+        return parsedate_to_datetime(article["pub_date"])
+    except (TypeError, ValueError):
+        return None
 
 
 def fetch_articles(query):
@@ -174,10 +186,7 @@ def save_seen(seen):
 
 def article_sort_key(candidate):
     _, article = candidate
-    try:
-        return parsedate_to_datetime(article["pub_date"])
-    except (TypeError, ValueError):
-        return datetime.min.replace(tzinfo=timezone.utc)
+    return parse_pub_date(article) or datetime.min.replace(tzinfo=timezone.utc)
 
 
 def main():
@@ -209,6 +218,19 @@ def main():
 
     posted = 0
     skipped = 0
+    stale = 0
+    now = datetime.now(timezone.utc)
+    fresh_candidates = []
+    for keyword, article in candidates:
+        pub_date = parse_pub_date(article)
+        if pub_date is not None and (now - pub_date) > MAX_ARTICLE_AGE:
+            print(f"[stale] skipping ({pub_date.date()}) {article['title']!r}")
+            seen[article["link"]] = now.isoformat()
+            stale += 1
+            continue
+        fresh_candidates.append((keyword, article))
+    candidates = fresh_candidates
+
     for keyword, article in candidates:
         try:
             post_to_discord(keyword, article)
@@ -230,7 +252,10 @@ def main():
         time.sleep(1)  # stay well under Discord's rate limit
 
     save_seen(seen)
-    print(f"Done. {posted} new article(s) posted, {skipped} permanently skipped.")
+    print(
+        f"Done. {posted} new article(s) posted, {stale} stale (skipped), "
+        f"{skipped} permanently unpostable."
+    )
 
 
 if __name__ == "__main__":
