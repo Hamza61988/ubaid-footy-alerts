@@ -18,7 +18,6 @@ KEYWORDS_FILE = "keywords.json"
 SEEN_FILE = "seen.json"
 RSS_BASE = "https://news.google.com/rss/search"
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-MAX_SEEN = 3000
 REQUEST_TIMEOUT = 20
 EMBED_COLOR = 0x1DB954
 USER_AGENT = "Mozilla/5.0 (compatible; ubaid-footy-alerts/1.0)"
@@ -31,6 +30,12 @@ TITLE_LIMIT = 300
 # back into a query's results and look "new" since we've never seen its
 # link before. Anything older than this is ignored rather than posted.
 MAX_ARTICLE_AGE = timedelta(days=3)
+# How long a link stays recorded in seen.json before it's pruned. Must stay
+# comfortably longer than MAX_ARTICLE_AGE: if we forget a link before its
+# article could possibly still look "fresh" on a resurfacing, it can get
+# reposted as if it were new. Pruning by age (not a fixed count) guarantees
+# that never happens, however bursty a run's volume gets.
+SEEN_RETENTION = MAX_ARTICLE_AGE + timedelta(days=4)
 
 
 def clean_text(text, limit):
@@ -43,9 +48,15 @@ def clean_text(text, limit):
 
 def parse_pub_date(article):
     try:
-        return parsedate_to_datetime(article["pub_date"])
+        parsed = parsedate_to_datetime(article["pub_date"])
     except (TypeError, ValueError):
         return None
+    if parsed.tzinfo is None:
+        # A pubDate with no timezone offset parses fine but leaves a naive
+        # datetime, which crashes when compared against an aware one later.
+        # RSS dates here are always GMT/UTC in practice, so assume that.
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def fetch_articles(query):
@@ -177,9 +188,11 @@ def load_seen():
 
 
 def save_seen(seen):
-    if len(seen) > MAX_SEEN:
-        oldest_first = sorted(seen.items(), key=lambda kv: kv[1])
-        seen = dict(oldest_first[-MAX_SEEN:])
+    cutoff = (datetime.now(timezone.utc) - SEEN_RETENTION).isoformat()
+    # Keep anything we can't parse the timestamp of rather than risk
+    # dropping it - an unparseable "seen at" entry is not evidence it's safe
+    # to forget.
+    seen = {link: ts for link, ts in seen.items() if not isinstance(ts, str) or ts >= cutoff}
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
         json.dump(seen, f, indent=2, sort_keys=True)
 
@@ -223,8 +236,12 @@ def main():
     fresh_candidates = []
     for keyword, article in candidates:
         pub_date = parse_pub_date(article)
-        if pub_date is not None and (now - pub_date) > MAX_ARTICLE_AGE:
-            print(f"[stale] skipping ({pub_date.date()}) {article['title']!r}")
+        # Fail closed: a pubDate we can't parse (missing, malformed) is not
+        # proof the article is fresh, and this filter's whole job is to keep
+        # unverified-age articles out - so treat "can't tell" as stale too.
+        if pub_date is None or (now - pub_date) > MAX_ARTICLE_AGE:
+            reason = f"({pub_date.date()})" if pub_date is not None else "(no parseable date)"
+            print(f"[stale] skipping {reason} {article['title']!r}")
             seen[article["link"]] = now.isoformat()
             stale += 1
             continue

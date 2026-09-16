@@ -114,8 +114,11 @@ To remove a keyword, delete its line from the JSON array.
   window.
 - Schedule is every 10 minutes (`.github/workflows/check.yml`), the
   fastest practical interval on GitHub Actions' free public-repo tier.
-- `seen.json` is capped at the 3000 most recently seen links so it
-  doesn't grow forever.
+- `seen.json` entries are pruned by age (`SEEN_RETENTION` in `check.py`,
+  currently 7 days) rather than a fixed count, so it doesn't grow forever.
+  This is deliberately longer than `MAX_ARTICLE_AGE` — a link only ever
+  gets forgotten once its article is old enough that the freshness filter
+  would reject it anyway if it ever resurfaced in Google's results.
 - Keep this repo **public** — private repos only get 2,000 free Actions
   minutes/month, which this schedule would burn through in under two
   weeks. Public repos get unlimited free Actions minutes. Nothing
