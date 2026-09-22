@@ -1,5 +1,6 @@
 """Poll Google News RSS for keywords and post new hits to a Discord webhook."""
 
+import hashlib
 import json
 import os
 import re
@@ -175,16 +176,27 @@ def post_to_discord(keyword, article):
     raise UnpostableArticle(str(last_error))
 
 
+def seen_key(link):
+    """Google News links run ~600 chars each. Storing a short digest instead
+    keeps seen.json (and every commit of it) roughly 15x smaller, which
+    matters a lot when the workflow commits this file every 10 minutes."""
+    return hashlib.sha1(link.encode("utf-8")).hexdigest()[:16]
+
+
 def load_seen():
     if not os.path.exists(SEEN_FILE):
         return {}
     with open(SEEN_FILE, "r", encoding="utf-8") as f:
         raw = json.load(f)
-    # Back-compat: older format was a plain list of links.
+    # Back-compat: the oldest format was a plain list of links, and the one
+    # after that a dict keyed by the full link. Both migrate to digests so
+    # articles already posted under an older format don't get posted again.
     if isinstance(raw, list):
         now = datetime.now(timezone.utc).isoformat()
-        return {link: now for link in raw}
-    return raw
+        return {seen_key(link): now for link in raw}
+    return {
+        seen_key(key) if "://" in key else key: value for key, value in raw.items()
+    }
 
 
 def save_seen(seen):
@@ -192,7 +204,7 @@ def save_seen(seen):
     # Keep anything we can't parse the timestamp of rather than risk
     # dropping it - an unparseable "seen at" entry is not evidence it's safe
     # to forget.
-    seen = {link: ts for link, ts in seen.items() if not isinstance(ts, str) or ts >= cutoff}
+    seen = {key: ts for key, ts in seen.items() if not isinstance(ts, str) or ts >= cutoff}
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
         json.dump(seen, f, indent=2, sort_keys=True)
 
@@ -222,7 +234,7 @@ def main():
 
         for article in articles:
             link = article["link"]
-            if link in seen or link in links_in_batch:
+            if seen_key(link) in seen or link in links_in_batch:
                 continue
             links_in_batch.add(link)
             candidates.append((keyword, article))
@@ -242,7 +254,7 @@ def main():
         if pub_date is None or (now - pub_date) > MAX_ARTICLE_AGE:
             reason = f"({pub_date.date()})" if pub_date is not None else "(no parseable date)"
             print(f"[stale] skipping {reason} {article['title']!r}")
-            seen[article["link"]] = now.isoformat()
+            seen[seen_key(article["link"])] = now.isoformat()
             stale += 1
             continue
         fresh_candidates.append((keyword, article))
@@ -256,14 +268,14 @@ def main():
             # its own (e.g. a pathologically long link) - mark it seen so it
             # doesn't get retried and fail again every run forever.
             print(f"[skip] giving up on {article['title']!r}: {e}")
-            seen[article["link"]] = datetime.now(timezone.utc).isoformat()
+            seen[seen_key(article["link"])] = datetime.now(timezone.utc).isoformat()
             skipped += 1
             continue
         except (urllib.error.URLError, RuntimeError) as e:
             print(f"[error] discord post failed for {article['title']!r}: {e}")
             continue
 
-        seen[article["link"]] = datetime.now(timezone.utc).isoformat()
+        seen[seen_key(article["link"])] = datetime.now(timezone.utc).isoformat()
         posted += 1
         print(f"[posted] {keyword}: {article['title']}")
         time.sleep(1)  # stay well under Discord's rate limit
