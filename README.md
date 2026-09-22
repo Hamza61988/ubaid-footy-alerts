@@ -112,15 +112,24 @@ To remove a keyword, delete its line from the JSON array.
   link before. Anything older is logged as `[stale]` and marked seen
   without posting. Adjust the constant if you want a wider/narrower
   window.
-- Schedule is every 10 minutes (`.github/workflows/check.yml`), the
-  fastest practical interval on GitHub Actions' free public-repo tier.
+- **Why the workflow loops instead of just using cron**: GitHub silently
+  drops most frequent scheduled runs on free repos. A `*/10` cron was in
+  practice only firing every 4–6 hours, so news landed hours late. Each
+  run now loops internally on a real 10-minute interval for 5.5 hours
+  (just under Actions' 6-hour job limit), and the schedule only serves to
+  relay one run into the next — a scheduled run that fires mid-loop goes
+  pending and takes over the moment the current one ends. Tune
+  `LOOP_MINUTES` / `INTERVAL_SECONDS` in the workflow to change cadence.
+- Remaining latency is Google's, not ours: an article only shows up once
+  Google has indexed it into that query's results, which can itself take
+  a few hours. Nothing on our side can speed that part up.
 - `seen.json` entries are pruned by age (`SEEN_RETENTION` in `check.py`,
   currently 7 days) rather than a fixed count, so it doesn't grow forever.
   This is deliberately longer than `MAX_ARTICLE_AGE` — a link only ever
   gets forgotten once its article is old enough that the freshness filter
   would reject it anyway if it ever resurfaced in Google's results.
-- Keep this repo **public** — private repos only get 2,000 free Actions
-  minutes/month, which this schedule would burn through in under two
-  weeks. Public repos get unlimited free Actions minutes. Nothing
-  sensitive lives in the code; the webhook URL is stored only as an
-  encrypted repository secret.
+- This repo **must stay public.** Public repos get unlimited free Actions
+  minutes; private repos on the free plan get 2,000/month, and since the
+  workflow now loops continuously it would burn through that in about a
+  day and a half. Nothing sensitive lives in the code — the webhook URL
+  is stored only as an encrypted repository secret.

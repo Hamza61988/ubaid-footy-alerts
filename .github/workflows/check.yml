@@ -1,5 +1,10 @@
 name: Football News Checker
 
+# GitHub silently drops most frequent scheduled runs on free repos - in
+# practice this workflow was only getting fired every 4-6 hours, so news
+# landed hours late. Instead of relying on the scheduler for cadence, each
+# run now loops internally on a real 10-minute interval for just under the
+# 6-hour job limit, and the schedule just relays one run into the next.
 on:
   schedule:
     - cron: "*/10 * * * *"
@@ -8,6 +13,9 @@ on:
 permissions:
   contents: write
 
+# A scheduled run that fires while one is already looping goes pending and
+# takes over the moment the current one ends (GitHub keeps only the newest
+# pending run per group), which is what makes the relay continuous.
 concurrency:
   group: football-news-checker
   cancel-in-progress: false
@@ -15,6 +23,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,19 +33,39 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run checker
+      - name: Check for news on a loop
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python check.py
-
-      - name: Commit updated seen.json
+          LOOP_MINUTES: "330"
+          INTERVAL_SECONDS: "600"
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add seen.json
-          if ! git diff --cached --quiet; then
-            git commit -m "Update seen articles"
-            git push
-          else
-            echo "No new articles, nothing to commit."
-          fi
+
+          end=$(( $(date +%s) + LOOP_MINUTES * 60 ))
+          cycle=0
+
+          while [ "$(date +%s)" -lt "$end" ]; do
+            cycle=$(( cycle + 1 ))
+            started=$(date +%s)
+            echo "::group::Cycle $cycle at $(date -u '+%Y-%m-%d %H:%M:%SZ')"
+
+            # Never let one bad cycle end the whole loop.
+            python check.py || echo "[warn] checker exited non-zero; continuing"
+
+            git add seen.json
+            if ! git diff --cached --quiet; then
+              git commit -q -m "Update seen articles"
+              git pull --rebase --autostash -q || git rebase --abort 2>/dev/null || true
+              git push -q || echo "[warn] push failed; retrying next cycle"
+            fi
+
+            echo "::endgroup::"
+
+            remaining=$(( INTERVAL_SECONDS - ( $(date +%s) - started ) ))
+            if [ "$remaining" -gt 0 ] && [ "$(date +%s)" -lt "$end" ]; then
+              sleep "$remaining"
+            fi
+          done
+
+          echo "Loop finished after $cycle cycle(s); the next scheduled run takes over."
